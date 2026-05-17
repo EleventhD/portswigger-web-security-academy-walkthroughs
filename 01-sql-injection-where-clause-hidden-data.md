@@ -1,30 +1,27 @@
-# Lab: SQL injection vulnerability in WHERE clause allowing retrieval of hidden data
-
 ## 1. Información general
 
 | Campo | Detalle |
-| --- | --- |
+|---|---|
 | Plataforma | PortSwigger Web Security Academy |
 | Learning Path | SQL Injection |
 | Categoría | SQL Injection en cláusula `WHERE` |
 | Dificultad | Apprentice / Basic |
-| Herramienta principal | Burp Suite Community Edition |
-| Estado | Resuelto |
-| Objetivo | Mostrar productos ocultos/no publicados modificando la lógica SQL del filtro de categorías |
 
 ---
 
 ## 2. Objetivo del laboratorio
 
-El laboratorio contiene una vulnerabilidad de **SQL Injection** en el filtro de categorías de productos.
-
-Cuando el usuario selecciona una categoría, la aplicación ejecuta una consulta similar a:
+Este laboratorio contiene una vulnerabilidad de inyección SQL en el filtro de categoría de productos. Cuando el usuario selecciona una categoría, la aplicación ejecuta una consulta SQL como la siguiente:
 
 ```sql
 SELECT * FROM products WHERE category = 'Gifts' AND released = 1
 ```
 
-El objetivo es modificar la petición HTTP para lograr que la aplicación muestre productos no publicados, es decir, productos que normalmente no deberían mostrarse porque no cumplen la condición:
+Para resolver el laboratorio, se debe realizar un ataque de inyección SQL que provoque que la aplicación muestre uno o más productos no publicados.
+
+### 2.1 Primera observación del objetivo
+
+Para este laboratorio, el objetivo es claro: modificar la petición HTTP para lograr que la aplicación muestre productos no publicados, es decir, productos que normalmente no deberían mostrarse porque no cumplen la siguiente condición:
 
 ```sql
 released = 1
@@ -32,222 +29,144 @@ released = 1
 
 ---
 
-## 3. Concepto técnico
 
-La vulnerabilidad ocurre cuando una aplicación construye consultas SQL concatenando directamente datos controlados por el usuario sin validación ni parametrización adecuada.
+## 3. Reconocimiento
 
-En este caso, el parámetro vulnerable es:
+### 3.1 Primer vistazo
 
+El primer vistazo al laboratorio nos presenta un aplicativo sencillo. Se muestra un listado de distintos productos y una sección de búsqueda o filtrado. Cerca de esta sección podemos encontrar filtros prefabricados que permiten navegar entre distintas categorías.
+
+<img width="1920" height="1200" alt="Screenshot_2026-05-14_23_39_48" src="https://github.com/user-attachments/assets/4f9ffedd-90fc-4c43-a03a-b7b51b41ab31" />
+
+En la barra de direcciones del navegador podemos observar parte de la petición HTTP que se envía al backend:
+
+```http
+GET /filter?category=Accessories HTTP/2
 ```
-category
-```
 
-La aplicación toma el valor de `category` y lo inserta dentro de la cláusula `WHERE` de la consulta SQL.
-
-Consulta esperada:
+De acuerdo con la descripción del laboratorio, este parámetro es utilizado por la aplicación para construir una consulta SQL similar a la siguiente:
 
 ```sql
 SELECT * FROM products WHERE category = 'Accessories' AND released = 1
 ```
 
-El usuario no controla directamente el campo `released`, pero sí puede modificar el parámetro `category` para alterar la lógica de la consulta y neutralizar la condición:
+Aquí ya podemos identificar cuál es la parte de la consulta donde debemos realizar la inyección. Dentro de la petición HTTP, el valor controlado por el usuario se encuentra en el parámetro:
 
-```sql
-AND released = 1
-```
-
----
-
-## 4. Reconocimiento inicial
-
-### Funcionalidad analizada
-
-La funcionalidad vulnerable corresponde al filtro de categorías de productos.
-
-Desde la interfaz web, el usuario puede seleccionar categorías como:
-
-- `Accessories`
-- `Food & Drink`
-- `Gifts`
-- `Lifestyle`
-
-Al seleccionar una categoría, la aplicación realiza una petición HTTP hacia el endpoint `/filter`.
-
----
-
-## 5. Request original
-
-Petición capturada desde Burp Suite:
-
-```
-GET /filter?category=Accessories HTTP/2
-Host: LAB-ID.web-security-academy.net
-Cookie: session=[REDACTED]
-User-Agent: Mozilla/5.0
-Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
-Referer: <https://LAB-ID.web-security-academy.net/filter?category=Accessories>
-```
-
-El parámetro relevante es:
-
-```
+```http
 category=Accessories
 ```
 
-Este valor parece ser utilizado por el servidor para construir la siguiente consulta:
+De acuerdo con el comportamiento del aplicativo, el valor dentro de `category` cambia para cumplir la función de filtrado por categoría. Adicionalmente, la aplicación aplica de forma implícita un segundo filtro:
 
 ```sql
-SELECT * FROM products WHERE category = 'Accessories' AND released = 1
+released = 1
 ```
+
+Este segundo filtro limita los resultados únicamente a productos publicados.
 
 ---
 
-## 6. Hipótesis de explotación
+### 3.2 SQL Injection
 
-Si el parámetro `category` se concatena directamente dentro de la consulta SQL, entonces es posible cerrar la cadena SQL con una comilla simple (`'`) y comentar el resto de la consulta.
+El parámetro `category` es controlado por el usuario y parece ser utilizado directamente por la aplicación para construir la consulta SQL del filtro de productos.
 
-La condición que se busca neutralizar es:
+Como el valor `released` no es modificable directamente desde la petición HTTP, debemos aplicar la inyección dentro del parámetro `category`.
+
+El objetivo es alterar la lógica de la consulta SQL para que la aplicación ignore la condición:
 
 ```sql
 AND released = 1
 ```
 
-Para lograrlo, se puede inyectar un comentario SQL después del valor de la categoría.
+Para ello, probamos inyectando una comilla simple y un comentario SQL después del valor de la categoría:
 
----
-
-## 7. Pruebas realizadas
-
-| # | Prueba | Payload / Modificación | Resultado | Interpretación |
-| --- | --- | --- | --- | --- |
-| 1 | Modificación del header `Referer` | `Referer: /filter?category=Accessories'--` | HTTP 200, sin cambios visibles | El servidor no utiliza el header `Referer` para construir la consulta vulnerable |
-| 2 | Modificación del parámetro `category` en la línea GET | `/filter?category=Accessories'--` | Se muestran productos adicionales | La condición `AND released = 1` fue comentada correctamente |
-| 3 | Uso de condición siempre verdadera | `/filter?category=Accessories' OR 1=1--` | Se muestran más productos de distintas categorías | `OR 1=1` fuerza que la condición sea verdadera y amplía los resultados |
-
----
-
-## 8. Error identificado durante la prueba
-
-En el primer intento, la inyección fue aplicada dentro del header:
-
-```
-Referer: <https://LAB-ID.web-security-academy.net/filter?category=Accessories>
+```http
+GET /filter?category=Accessories'-- HTTP/2
 ```
 
-Aunque la respuesta HTTP fue exitosa, no hubo cambios en los resultados mostrados por la aplicación.
-
-Esto ocurrió porque la aplicación no estaba utilizando el valor del header `Referer` para construir la consulta SQL vulnerable.
-
-El punto correcto de modificación era la línea principal de la petición HTTP:
-
-```
-GET /filter?category=Accessories HTTP/2
-```
-
-Este aprendizaje es importante porque en pruebas reales no basta con modificar cualquier aparición del parámetro. Es necesario identificar cuál valor es procesado por la lógica del servidor.
-
----
-
-## 9. Explotación final
-
-### Payload utilizado
-
-```
-Accessories'--
-```
-
-Versión recomendada con URL encoding:
-
-```
-Accessories%27--+
-```
-
-### Request final
-
-```
-GET /filter?category=Accessories%27--+ HTTP/2
-Host: LAB-ID.web-security-academy.net
-Cookie: session=[REDACTED]
-User-Agent: Mozilla/5.0
-Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
-```
-
----
-
-## 10. Consulta SQL resultante
-
-Consulta original esperada:
-
-```sql
-SELECT * FROM products WHERE category = 'Accessories' AND released = 1
-```
-
-Consulta modificada por la inyección:
+La consulta SQL resultante quedaría conceptualmente de la siguiente manera:
 
 ```sql
 SELECT * FROM products WHERE category = 'Accessories'--' AND released = 1
 ```
 
-La secuencia `--` comenta el resto de la consulta SQL, por lo que esta parte deja de ejecutarse:
+El objetivo de esta inyección es cerrar el valor de `category` utilizando una comilla simple `'` y después comentar todo lo que siga en la consulta mediante `--`.
+
+De esta manera, la parte final de la consulta deja de ejecutarse:
 
 ```sql
 AND released = 1
 ```
 
-Como resultado, la aplicación muestra productos de la categoría `Accessories` aunque no estén marcados como publicados.
+<img width="1920" height="1200" alt="Screenshot_2026-05-14_23_56_30" src="https://github.com/user-attachments/assets/f95f338d-905d-4189-bae7-6b2c1f71ecf7" />
 
 ---
 
-## 11. Variante con condición siempre verdadera
+### 3.3 Resultado obtenido
 
-También se validó una variante usando una condición lógica siempre verdadera:
+Al probar esta petición HTTP modificada, logramos obtener lo siguiente:
 
-```
-Accessories' OR 1=1--
-```
+<img width="1920" height="1200" alt="Screenshot_2026-05-14_23_59_03" src="https://github.com/user-attachments/assets/8603ec20-b1ce-4992-8a2d-bfb84df5bbe9" />
 
-Versión URL encoded:
-
-```
-Accessories%27+OR+1%3D1--+
-```
-
-Consulta resultante conceptual:
-
-```sql
-SELECT * FROM products WHERE category = 'Accessories' OR 1=1--' AND released = 1
-```
-
-En este caso, la expresión:
-
-```sql
-OR 1=1
-```
-
-hace que la condición del `WHERE` siempre sea verdadera, por lo que la aplicación puede devolver productos de múltiples categorías, incluyendo productos ocultos o no publicados.
-
----
-
-## 12. Resultado obtenido
-
-El laboratorio fue resuelto exitosamente.
-
-La aplicación mostró productos que originalmente no estaban visibles debido al filtro:
+Con esto podemos dar por cumplido el objetivo del laboratorio. Logramos visualizar productos dentro de la tienda que inicialmente no podíamos ver debido a que no correspondían al valor:
 
 ```sql
 released = 1
 ```
 
-Esto confirma que fue posible alterar la lógica SQL de la consulta mediante el parámetro `category`.
-
 ---
 
-## 13. Conclusión
+## 4. Explicación del laboratorio
 
-Este laboratorio demuestra una SQL Injection básica pero fundamental en una cláusula `WHERE`.
+Este laboratorio demuestra una vulnerabilidad básica de **SQL Injection** dentro de una cláusula `WHERE`.
 
-El aprendizaje principal es que una inyección exitosa no requiere controlar directamente todos los campos de una consulta. Basta con controlar un punto anterior de la lógica SQL para alterar el comportamiento completo de la consulta.
+La aplicación permite filtrar productos por categoría mediante el parámetro `category`, el cual es enviado en la petición HTTP:
 
-En este caso, al controlar el parámetro `category`, fue posible comentar la condición `AND released = 1` y hacer que la aplicación mostrara productos no publicados.
+```http
+GET /filter?category=Accessories HTTP/2
+```
 
-Este patrón es esencial para entender vulnerabilidades de SQL Injection en aplicaciones web reales, especialmente aquellas que utilizan filtros, búsquedas, categorías o parámetros dinámicos en consultas SQL.
+El problema ocurre porque la aplicación aparentemente toma el valor de este parámetro y lo concatena directamente dentro de una consulta SQL, sin validar ni parametrizar adecuadamente la entrada del usuario.
+
+La consulta original esperada sería similar a esta:
+
+```sql
+SELECT * FROM products WHERE category = 'Accessories' AND released = 1
+```
+
+Esta consulta tiene dos condiciones principales:
+
+| Condición | Propósito |
+|---|---|
+| `category = 'Accessories'` | Mostrar únicamente productos de la categoría seleccionada |
+| `released = 1` | Mostrar únicamente productos publicados |
+
+El objetivo del laboratorio es lograr que se muestren productos no publicados. Para conseguirlo, no necesitamos modificar directamente el valor de `released`, ya que este campo no está expuesto en la petición HTTP. En su lugar, debemos alterar la lógica de la consulta desde el parámetro que sí controlamos: `category`.
+
+El payload utilizado fue:
+
+```sql
+Accessories'--
+```
+
+Este payload funciona de la siguiente manera:
+
+| Parte del payload | Función |
+|---|---|
+| `Accessories` | Valor legítimo de la categoría |
+| `'` | Cierra la cadena SQL original |
+| `--` | Comenta el resto de la consulta SQL |
+
+Al enviar el payload, la consulta queda conceptualmente así:
+
+```sql
+SELECT * FROM products WHERE category = 'Accessories'--' AND released = 1
+```
+
+Todo lo que aparece después de `--` es tratado como comentario por la base de datos. Por lo tanto, la condición:
+
+```sql
+AND released = 1
+```
+
+queda anulada y ya no se aplica al resultado final.
